@@ -18,7 +18,7 @@ comfy_ui_stack = ComfyUIStack(
         "Repository": "aws-samples/cost-effective-aws-deployment-of-comfyui"
     },
     # Override Parameters (example)
-    # auto_scale_down=False,
+    auto_scale_down=False,
     # schedule_auto_scaling=True,
     # timezone="Asia/Tokyo",
     # schedule_scale_up="0 8 * * 1-5",
