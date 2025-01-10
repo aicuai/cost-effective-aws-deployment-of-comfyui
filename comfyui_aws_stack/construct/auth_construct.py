@@ -48,10 +48,8 @@ class AuthConstruct(Construct):
             self_sign_up_enabled=False if saml_auth_enabled else self_sign_up_enabled,
             standard_attributes=cognito.StandardAttributes(
                 email=cognito.StandardAttribute(mutable=True, required=True),
-                given_name=cognito.StandardAttribute(
-                    mutable=True, required=True),
-                family_name=cognito.StandardAttribute(
-                    mutable=True, required=True)
+                given_name=cognito.StandardAttribute(mutable=True, required=True),
+                family_name=cognito.StandardAttribute(mutable=True, required=True)
             ),
             password_policy=cognito.PasswordPolicy(
                 min_length=12,
@@ -60,8 +58,15 @@ class AuthConstruct(Construct):
                 require_symbols=True
             ),
             advanced_security_mode=cognito.AdvancedSecurityMode.ENFORCED,
-            mfa_second_factor=cognito.MfaSecondFactor(otp=True, sms=True),
             mfa=cognito.Mfa.REQUIRED if not saml_auth_enabled and mfa_required else cognito.Mfa.OPTIONAL,
+            user_pool_name="ComfyUIUserPool",
+            sign_in_aliases=cognito.SignInAliases(
+                email=True
+            ),
+            user_invitation=cognito.UserInvitationConfig(
+                email_subject="ComfyUI - Your temporary password",
+                email_body="Your username is {username} and temporary password is {####}"
+            )
         )
 
         # Add a custom domain for the hosted UI
@@ -71,29 +76,40 @@ class AuthConstruct(Construct):
                 domain_prefix=cognito_custom_domain
             )
         )
+        
+        full_domain = f"https://{application_dns_name}"
+        login_page_url = f"{full_domain}/login"  # カスタムログインページのURL
 
         # Create an app client that the ALB can use for authentication
         user_pool_client = user_pool.add_client(
             "alb-app-client",
             generate_secret=True,
             o_auth=cognito.OAuthSettings(
-                callback_urls=[
-                    # This is the endpoint where the ALB accepts the
-                    # response from Cognito
-                    f"https://{application_dns_name}/oauth2/idpresponse",
-
-                    # This is here to allow a redirect to the login page
-                    # after the logout has been completed
-                    f"https://{application_dns_name}"
-                ],
-                flows=cognito.OAuthFlows(authorization_code_grant=True),
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,
+                    implicit_code_grant=True
+                ),
                 scopes=[
-                    cognito.OAuthScope.OPENID
-                ]
+                    cognito.OAuthScope.OPENID,
+                    cognito.OAuthScope.EMAIL,
+                    cognito.OAuthScope.PROFILE
+                ],
+                callback_urls=[
+                    f"{full_domain}/comfyui/oauth2/idpresponse",  # ALBのコールバックURL
+                    f"{full_domain}/comfyui",  # ComfyUI メインページ
+                    login_page_url,  # ログインページ
+                ],
+                logout_urls=[
+                    login_page_url,  # ログアウト後のリダイレクト先
+                ],
             ),
-            supported_identity_providers=[
-                cognito.UserPoolClientIdentityProvider.COGNITO
-            ]
+            auth_flows=cognito.AuthFlow(
+                user_password=True,
+                admin_user_password=True,
+                custom=True,
+                user_srp=True
+            ),
+            prevent_user_existence_errors=True
         )
 
         # Logout URLs and redirect URIs can't be set in CDK constructs natively ...yet
@@ -105,10 +121,11 @@ class AuthConstruct(Construct):
         ]
 
         user_pool_full_domain = user_pool_custom_domain.base_url()
-        redirect_uri = urllib.parse.quote('https://' + application_dns_name)
+        login_url_encoded = urllib.parse.quote(login_page_url)
         user_pool_logout_url = f"{user_pool_full_domain}/logout?" \
             + f"client_id={user_pool_client.user_pool_client_id}&" \
-            + f"logout_uri={redirect_uri}"
+            + f"logout_uri={login_url_encoded}&" \
+            + f"redirect_uri={login_url_encoded}"
 
         user_pool_user_info_url = f"{user_pool_full_domain}/oauth2/userInfo"
 

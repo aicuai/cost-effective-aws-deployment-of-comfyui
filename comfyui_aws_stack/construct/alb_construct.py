@@ -263,90 +263,117 @@ class AlbConstruct(Construct):
         scope = self.scope
         alb = self.alb
         certificate = self.certificate
+        base_path = "/comfyui"
 
-        # Add listener to the Load Balancer on port 443
+        # HTTPS リスナーの追加
         listener = alb.add_listener(
             "Listener",
             certificates=[certificate],
             port=443,
             protocol=elbv2.ApplicationProtocol.HTTPS,
-            default_action=elbv2.ListenerAction.forward([ecs_target_group])
+            default_action=elbv2.ListenerAction.redirect(
+                port="443",
+                protocol="HTTPS",
+                path="/login"
+            )
         )
 
-        # ALB Rule
+        # 共通の認証設定
+        auth_config = {
+            "next": None,  # これは各ルールで個別に設定
+            "user_pool": user_pool,
+            "user_pool_client": user_pool_client,
+            "user_pool_domain": user_pool_custom_domain,
+            "scope": "openid profile email",
+            "session_cookie_name": "AWSELBAuthSessionCookie",
+            "session_timeout": Duration.days(1),
+            "authentication_request_extra_params": {
+                "response_type": "code",
+                "redirect_uri": "/"
+            }
+        }
+
+        # ログインページへのアクセスルール
+        login_rule = elbv2.ApplicationListenerRule(
+            scope,
+            "LoginPageRule",
+            listener=listener,
+            priority=1,
+            conditions=[elbv2.ListenerCondition.path_patterns(["/login"])],
+            action=elb_actions.AuthenticateCognitoAction(
+                **{**auth_config, "next": elbv2.ListenerAction.forward([ecs_target_group])}
+            )
+        )
+
+        # ComfyUIのパスパターンに対する認証ルール
+        comfyui_rule = elbv2.ApplicationListenerRule(
+            scope,
+            "ComfyUIRule",
+            listener=listener,
+            priority=5,
+            conditions=[elbv2.ListenerCondition.path_patterns([
+                f"{base_path}",
+                f"{base_path}/*"
+            ])],
+            action=elb_actions.AuthenticateCognitoAction(
+                **{**auth_config, "next": elbv2.ListenerAction.forward([ecs_target_group])}
+            )
+        )
+
+        # 管理者パネルへのアクセスルール
         lambda_admin_rule = elbv2.ApplicationListenerRule(
             scope,
             "LambdaAdminRule",
             listener=listener,
-            priority=5,
-            conditions=[elbv2.ListenerCondition.path_patterns(["/admin"])],
+            priority=10,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([f"{base_path}/admin"])
+            ],
             action=elb_actions.AuthenticateCognitoAction(
-                next=elbv2.ListenerAction.forward([lambda_admin_target_group]),
-                user_pool=user_pool,
-                user_pool_client=user_pool_client,
-                user_pool_domain=user_pool_custom_domain,
-            ),
+                **{**auth_config, "next": elbv2.ListenerAction.forward([lambda_admin_target_group])}
+            )
         )
 
+        # Docker再起動用のルール
         lambda_restart_docker_rule = elbv2.ApplicationListenerRule(
             scope,
             "LambdaRestartDockerRule",
             listener=listener,
-            priority=10,
-            conditions=[elbv2.ListenerCondition.path_patterns(
-                ["/admin/restart"])],
+            priority=15,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([f"{base_path}/admin/restart"])
+            ],
             action=elb_actions.AuthenticateCognitoAction(
-                next=elbv2.ListenerAction.forward(
-                    [lambda_restart_docker_target_group]),
-                user_pool=user_pool,
-                user_pool_client=user_pool_client,
-                user_pool_domain=user_pool_custom_domain,
-            ),
+                **{**auth_config, "next": elbv2.ListenerAction.forward([lambda_restart_docker_target_group])}
+            )
         )
 
+        # シャットダウン用のルール
         lambda_shutdown_rule = elbv2.ApplicationListenerRule(
             scope,
             "LambdaShutdownRule",
             listener=listener,
-            priority=15,
-            conditions=[elbv2.ListenerCondition.path_patterns(
-                ["/admin/shutdown"])],
+            priority=20,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([f"{base_path}/admin/shutdown"])
+            ],
             action=elb_actions.AuthenticateCognitoAction(
-                next=elbv2.ListenerAction.forward(
-                    [lambda_shutdown_target_group]),
-                user_pool=user_pool,
-                user_pool_client=user_pool_client,
-                user_pool_domain=user_pool_custom_domain,
-            ),
+                **{**auth_config, "next": elbv2.ListenerAction.forward([lambda_shutdown_target_group])}
+            )
         )
 
+        # スケールアップ用のルール
         lambda_scaleup_rule = elbv2.ApplicationListenerRule(
             scope,
             "LambdaScaleupRule",
             listener=listener,
-            priority=20,
-            conditions=[elbv2.ListenerCondition.path_patterns(
-                ["/admin/scaleup"])],
-            action=elb_actions.AuthenticateCognitoAction(
-                next=elbv2.ListenerAction.forward(
-                    [lambda_scaleup_target_group]),
-                user_pool=user_pool,
-                user_pool_client=user_pool_client,
-                user_pool_domain=user_pool_custom_domain,
-            ),
-        )
-
-        # Add authentication action as the first priority rule
-        auth_rule = listener.add_action(
-            "AuthenticateRule",
             priority=25,
+            conditions=[
+                elbv2.ListenerCondition.path_patterns([f"{base_path}/admin/scaleup"])
+            ],
             action=elb_actions.AuthenticateCognitoAction(
-                next=elbv2.ListenerAction.forward([ecs_target_group]),
-                user_pool=user_pool,
-                user_pool_client=user_pool_client,
-                user_pool_domain=user_pool_custom_domain,
-            ),
-            conditions=[elbv2.ListenerCondition.path_patterns(["/*"])]
+                **{**auth_config, "next": elbv2.ListenerAction.forward([lambda_scaleup_target_group])}
+            )
         )
 
         # Nag

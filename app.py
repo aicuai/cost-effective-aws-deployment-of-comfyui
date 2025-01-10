@@ -18,13 +18,12 @@ comfy_ui_stack = ComfyUIStack(
         "Repository": "aws-samples/cost-effective-aws-deployment-of-comfyui"
     },
     # Override Parameters (example)
+    # オートスケールダウンの無効化
     auto_scale_down=False,
-    # schedule_auto_scaling=True,
-    # timezone="Asia/Tokyo",
-    # schedule_scale_up="0 8 * * 1-5",
-    # schedule_scale_down="0 19 * * *",
-    # self_sign_up_enabled=True,
-    # allowed_sign_up_email_domains=["amazon.com"],
+    # カスタムドメインの設定
+    # host_name="comfyui",                        # サブドメイン部分
+    # domain_name="aicu.jp",                      # メインドメイン
+    # hosted_zone_id="Z03523711WHPFZJNX9T5Y",     # Route 53のホストゾーンID
 )
 
 Aspects.of(app).add(AwsSolutionsChecks(verbose=False))
