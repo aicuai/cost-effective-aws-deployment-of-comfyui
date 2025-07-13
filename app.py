@@ -7,6 +7,15 @@ from comfyui_aws_stack.comfyui_aws_stack import ComfyUIStack
 from cdk_nag import AwsSolutionsChecks, NagSuppressions
 
 app = cdk.App()
+
+# Get context variables
+user_pool_id = app.node.try_get_context("user_pool_id")
+user_pool_client_id = app.node.try_get_context("user_pool_client_id")
+user_pool_domain_name = app.node.try_get_context("user_pool_domain_name")
+domain_name = app.node.try_get_context("domain_name")
+host_name = app.node.try_get_context("host_name")
+slack_webhook_url = app.node.try_get_context("slack_webhook_url")
+
 comfy_ui_stack = ComfyUIStack(
     app, "ComfyUIStack",
     description="ComfyUI on AWS (uksb-ggn3251wsp)",
@@ -17,6 +26,12 @@ comfy_ui_stack = ComfyUIStack(
     tags={
         "Repository": "aws-samples/cost-effective-aws-deployment-of-comfyui"
     },
+    user_pool_id=user_pool_id,
+    user_pool_client_id=user_pool_client_id,
+    user_pool_domain_name=user_pool_domain_name,
+    domain_name=domain_name,
+    host_name=host_name,
+    slack_webhook_url=slack_webhook_url,
     # Override Parameters (example)
     # auto_scale_down=False,
     # schedule_auto_scaling=True,

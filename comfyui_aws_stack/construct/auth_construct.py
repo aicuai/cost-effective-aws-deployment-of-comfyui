@@ -34,6 +34,9 @@ class AuthConstruct(Construct):
             self_sign_up_enabled: bool,
             mfa_required: bool,
             allowed_sign_up_email_domains: List[str],
+            user_pool_id: str = None,
+            user_pool_client_id: str = None,
+            user_pool_domain_name: str = None,
             **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -41,70 +44,82 @@ class AuthConstruct(Construct):
         cognito_custom_domain = f"comfyui-alb-auth-{suffix}"
         application_dns_name = f"{host_name}.{domain_name}" if host_name and domain_name else alb.load_balancer_dns_name
 
-        # Create the user pool that holds our users
-        user_pool = cognito.UserPool(
-            scope,
-            "ComfyUIuserPool",
-            account_recovery=cognito.AccountRecovery.EMAIL_AND_PHONE_WITHOUT_MFA,
-            auto_verify=cognito.AutoVerifiedAttrs(email=True, phone=True),
-            self_sign_up_enabled=False if saml_auth_enabled else self_sign_up_enabled,
-            standard_attributes=cognito.StandardAttributes(
-                email=cognito.StandardAttribute(mutable=True, required=True),
-                given_name=cognito.StandardAttribute(
-                    mutable=True, required=True),
-                family_name=cognito.StandardAttribute(
-                    mutable=True, required=True)
-            ),
-            password_policy=cognito.PasswordPolicy(
-                min_length=12,
-                require_uppercase=True,
-                require_digits=True,
-                require_symbols=True
-            ),
-            advanced_security_mode=cognito.AdvancedSecurityMode.ENFORCED,
-            mfa_second_factor=cognito.MfaSecondFactor(otp=True, sms=True),
-            mfa=cognito.Mfa.REQUIRED if not saml_auth_enabled and mfa_required else cognito.Mfa.OPTIONAL,
-        )
-
-        # Add a custom domain for the hosted UI
-        user_pool_custom_domain = user_pool.add_domain(
-            "user-pool-domain",
-            cognito_domain=cognito.CognitoDomainOptions(
-                domain_prefix=cognito_custom_domain
+        if user_pool_id:
+            user_pool = cognito.UserPool.from_user_pool_id(
+                self, "ComfyUIuserPool", user_pool_id)
+        else:
+            # Create the user pool that holds our users
+            user_pool = cognito.UserPool(
+                scope,
+                "ComfyUIuserPool",
+                account_recovery=cognito.AccountRecovery.EMAIL_AND_PHONE_WITHOUT_MFA,
+                auto_verify=cognito.AutoVerifiedAttrs(email=True, phone=True),
+                self_sign_up_enabled=False if saml_auth_enabled else self_sign_up_enabled,
+                standard_attributes=cognito.StandardAttributes(
+                    email=cognito.StandardAttribute(mutable=True, required=True),
+                    given_name=cognito.StandardAttribute(
+                        mutable=True, required=True),
+                    family_name=cognito.StandardAttribute(
+                        mutable=True, required=True)
+                ),
+                password_policy=cognito.PasswordPolicy(
+                    min_length=12,
+                    require_uppercase=True,
+                    require_digits=True,
+                    require_symbols=True
+                ),
+                advanced_security_mode=cognito.AdvancedSecurityMode.ENFORCED,
+                mfa_second_factor=cognito.MfaSecondFactor(otp=True, sms=True),
+                mfa=cognito.Mfa.REQUIRED if not saml_auth_enabled and mfa_required else cognito.Mfa.OPTIONAL,
             )
-        )
 
-        # Create an app client that the ALB can use for authentication
-        user_pool_client = user_pool.add_client(
-            "alb-app-client",
-            generate_secret=True,
-            o_auth=cognito.OAuthSettings(
-                callback_urls=[
-                    # This is the endpoint where the ALB accepts the
-                    # response from Cognito
-                    f"https://{application_dns_name}/oauth2/idpresponse",
+        if user_pool_domain_name:
+            user_pool_custom_domain = cognito.UserPoolDomain.from_user_pool_domain_name(
+                self, "user-pool-domain", user_pool_domain_name)
+        else:
+            # Add a custom domain for the hosted UI
+            user_pool_custom_domain = user_pool.add_domain(
+                "user-pool-domain",
+                cognito_domain=cognito.CognitoDomainOptions(
+                    domain_prefix=cognito_custom_domain
+                )
+            )
 
-                    # This is here to allow a redirect to the login page
-                    # after the logout has been completed
-                    f"https://{application_dns_name}"
-                ],
-                flows=cognito.OAuthFlows(authorization_code_grant=True),
-                scopes=[
-                    cognito.OAuthScope.OPENID
+        if user_pool_client_id:
+            user_pool_client = cognito.UserPoolClient.from_user_pool_client_id(
+                self, "alb-app-client", user_pool_client_id)
+        else:
+            # Create an app client that the ALB can use for authentication
+            user_pool_client = user_pool.add_client(
+                "alb-app-client",
+                generate_secret=True,
+                o_auth=cognito.OAuthSettings(
+                    callback_urls=[
+                        # This is the endpoint where the ALB accepts the
+                        # response from Cognito
+                        f"https://{application_dns_name}/oauth2/idpresponse",
+
+                        # This is here to allow a redirect to the login page
+                        # after the logout has been completed
+                        f"https://{application_dns_name}"
+                    ],
+                    flows=cognito.OAuthFlows(authorization_code_grant=True),
+                    scopes=[
+                        cognito.OAuthScope.OPENID
+                    ]
+                ),
+                supported_identity_providers=[
+                    cognito.UserPoolClientIdentityProvider.COGNITO
                 ]
-            ),
-            supported_identity_providers=[
-                cognito.UserPoolClientIdentityProvider.COGNITO
-            ]
-        )
+            )
 
-        # Logout URLs and redirect URIs can't be set in CDK constructs natively ...yet
-        user_pool_client_cf: cognito.CfnUserPoolClient = user_pool_client.node.default_child
-        user_pool_client_cf.logout_ur_ls = [
-            # This is here to allow a redirect to the login page
-            # after the logout has been completed
-            f"https://{application_dns_name}"
-        ]
+            # Logout URLs and redirect URIs can't be set in CDK constructs natively ...yet
+            user_pool_client_cf: cognito.CfnUserPoolClient = user_pool_client.node.default_child
+            user_pool_client_cf.logout_ur_ls = [
+                # This is here to allow a redirect to the login page
+                # after the logout has been completed
+                f"https://{application_dns_name}"
+            ]
 
         user_pool_full_domain = user_pool_custom_domain.base_url()
         redirect_uri = urllib.parse.quote('https://' + application_dns_name)

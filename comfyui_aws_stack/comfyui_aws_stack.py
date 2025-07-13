@@ -44,6 +44,12 @@ class ComfyUIStack(Stack):
                  host_name: str = None,
                  domain_name: str = None,
                  hosted_zone_id: str = None,
+                 # Cognito
+                 user_pool_id: str = None,
+                 user_pool_client_id: str = None,
+                 user_pool_domain_name: str = None,
+                 # Slack
+                 slack_webhook_url: str = None,
                  **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -89,6 +95,9 @@ class ComfyUIStack(Stack):
             self_sign_up_enabled=self_sign_up_enabled,
             mfa_required=mfa_required,
             allowed_sign_up_email_domains=allowed_sign_up_email_domains,
+            user_pool_id=user_pool_id,
+            user_pool_client_id=user_pool_client_id,
+            user_pool_domain_name=user_pool_domain_name,
         )
 
         # ASG

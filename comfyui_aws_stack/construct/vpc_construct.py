@@ -24,6 +24,7 @@ class VpcConstruct(Construct):
 
         vpc = ec2.Vpc(
             scope, "CustomVPC",
+            cidr="10.1.0.0/16",
             max_azs=2,  # Define the maximum number of Availability Zones
             subnet_configuration=[
                 ec2.SubnetConfiguration(
