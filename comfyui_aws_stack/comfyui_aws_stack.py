@@ -6,6 +6,7 @@ from aws_cdk import aws_cognito as cognito
 from constructs import Construct
 
 from comfyui_aws_stack.construct.vpc_construct import VpcConstruct
+from comfyui_aws_stack.construct.efs_construct import EfsConstruct
 from comfyui_aws_stack.construct.alb_construct import AlbConstruct
 from comfyui_aws_stack.construct.asg_construct import AsgConstruct
 from comfyui_aws_stack.construct.ecs_construct import EcsConstruct
@@ -82,6 +83,12 @@ class ComfyUIStack(Stack):
             cheap_vpc=cheap_vpc
         )
 
+        # EFS
+        efs_construct = EfsConstruct(
+            self, "EfsConstruct",
+            vpc=vpc_construct.vpc
+        )
+
         # ALB
 
         alb_construct = AlbConstruct(
@@ -138,6 +145,13 @@ class ComfyUIStack(Stack):
             user_pool=user_pool,
             user_pool_client=user_pool_client,
             comfyui_image_tag=comfyui_image_tag,
+            file_system=efs_construct.file_system,
+            access_point=efs_construct.access_point,
+        )
+
+        # Allow ECS to connect to EFS
+        efs_construct.file_system.connections.allow_default_port_from(
+            ecs_construct.service_security_group
         )
 
         # Admin Lambda

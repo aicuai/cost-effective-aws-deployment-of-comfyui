@@ -1,6 +1,7 @@
 from aws_cdk import (
     aws_ecs as ecs,
     aws_ec2 as ec2,
+    aws_efs as efs,
     aws_ecr_assets as ecr_assets,
     aws_logs as logs,
     aws_iam as iam,
@@ -32,6 +33,8 @@ class EcsConstruct(Construct):
             user_pool: cognito.UserPool,
             user_pool_client: cognito.UserPoolClient,
             comfyui_image_tag: str,
+            file_system: efs.IFileSystem,
+            access_point: efs.IAccessPoint,
             **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -46,8 +49,7 @@ class EcsConstruct(Construct):
         capacity_provider = ecs.AsgCapacityProvider(
             scope, "AsgCapacityProvider",
             auto_scaling_group=auto_scaling_group,
-            enable_managed_scaling=False,  # Enable managed scaling
-            # Disable managed termination protection
+            enable_managed_scaling=False,
             enable_managed_termination_protection=False,
             target_capacity_percent=100
         )
@@ -67,15 +69,18 @@ class EcsConstruct(Construct):
         )
 
         # ECR Repository
+        slack_webhook_url = self.node.try_get_context("slack_webhook_url") or ""
         docker_image_asset = ecr_assets.DockerImageAsset(
             scope,
             "ComfyUIImage",
             directory="comfyui_aws_stack/docker",
             platform=ecr_assets.Platform.LINUX_AMD64,
             network_mode=ecr_assets.NetworkMode.custom(
-                "sagemaker") if is_sagemaker_studio else None
+                "sagemaker") if is_sagemaker_studio else None,
+            build_args={
+                "SLACK_WEBHOOK_URL": slack_webhook_url
+            }
         )
-        # ここでリポジトリのPull権限を付与する
         docker_image_asset.repository.grant_pull(task_exec_role)
 
         # CloudWatch Logs Group
@@ -86,18 +91,19 @@ class EcsConstruct(Construct):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
-        # Docker Volume Configuration
+        # EFS Volume Configuration
+        efs_volume_config = ecs.EfsVolumeConfiguration(
+            file_system_id=file_system.file_system_id,
+            transit_encryption="ENABLED",
+            authorization_config=ecs.AuthorizationConfig(
+                access_point_id=access_point.access_point_id,
+                iam="ENABLED"
+            )
+        )
+
         volume = ecs.Volume(
             name="ComfyUIVolume-" + suffix,
-            docker_volume_configuration=ecs.DockerVolumeConfiguration(
-                scope=ecs.Scope.SHARED,
-                driver="public.ecr.aws/j1l5j1d1/rexray-ebs",
-                driver_opts={
-                    "volumetype": "gp3",
-                    "size": "250"  # Size in GiB
-                },
-                autoprovision=True
-            )
+            efs_volume_configuration=efs_volume_config
         )
 
         task_definition = ecs.Ec2TaskDefinition(
@@ -108,15 +114,12 @@ class EcsConstruct(Construct):
             execution_role=task_exec_role,
             volumes=[volume]
         )
+        
+        file_system.grant_read_write(task_definition.task_role)
 
         # Add container to the task definition
         container = task_definition.add_container(
             "ComfyUIContainer",
-#            image=ecs.ContainerImage.from_ecr_repository(
-#                docker_image_asset.repository,
-#                comfyui_image_tag
-#            ),
-# After
             image=ecs.ContainerImage.from_docker_image_asset(docker_image_asset),
             gpu_count=1,
             memory_reservation_mib=15000,
@@ -134,15 +137,19 @@ class EcsConstruct(Construct):
                 "AWS_REGION": region,
                 "COGNITO_USER_POOL_ID": user_pool.user_pool_id,
                 "COGNITO_CLIENT_ID": user_pool_client.user_pool_client_id,
-                "SLACK_WEBHOOK_URL": self.node.try_get_context("slack_webhook_url") or ""
-                # Add other env variables here
+                "SLACK_WEBHOOK_URL": slack_webhook_url
             }
         )
 
-        # Mount the host volume to the container
+        # Mount the EFS volume to the container
         container.add_mount_points(
             ecs.MountPoint(
-                container_path="/home/user/opt/ComfyUI",
+                container_path="/home/user/opt/ComfyUI/models",
+                source_volume=volume.name,
+                read_only=False
+            ),
+            ecs.MountPoint(
+                container_path="/home/user/opt/ComfyUI/output",
                 source_volume=volume.name,
                 read_only=False
             )
@@ -168,12 +175,15 @@ class EcsConstruct(Construct):
             allow_all_outbound=True,
         )
 
-        # Allow inbound traffic on port 8181
+        # Allow inbound traffic on port 8181 from ALB
         service_security_group.add_ingress_rule(
             ec2.Peer.security_group_id(alb_security_group.security_group_id),
             ec2.Port.tcp(8181),
-            "Allow inbound traffic on port 8181",
+            "Allow inbound traffic on port 8181 from ALB",
         )
+        
+        # Allow outbound traffic to EFS
+        file_system.connections.allow_default_port_from(service_security_group)
 
         # Create ECS Service
         service = ecs.Ec2Service(
@@ -264,3 +274,4 @@ class EcsConstruct(Construct):
         self.cluster = cluster
         self.service = service
         self.ecs_target_group = ecs_target_group
+        self.service_security_group = service_security_group
