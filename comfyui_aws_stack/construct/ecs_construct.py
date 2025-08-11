@@ -1,8 +1,7 @@
 from aws_cdk import (
     aws_ecs as ecs,
     aws_ec2 as ec2,
-    aws_efs as efs,
-    aws_ecr_assets as ecr_assets,
+    aws_ecr as ecr,
     aws_logs as logs,
     aws_iam as iam,
     aws_cognito as cognito,
@@ -32,9 +31,8 @@ class EcsConstruct(Construct):
             region: str,
             user_pool: cognito.UserPool,
             user_pool_client: cognito.UserPoolClient,
+            repository: ecr.IRepository,
             comfyui_image_tag: str,
-            file_system: efs.IFileSystem,
-            access_point: efs.IAccessPoint,
             **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -67,21 +65,9 @@ class EcsConstruct(Construct):
                 )
             ],
         )
-
-        # ECR Repository
-        slack_webhook_url = self.node.try_get_context("slack_webhook_url") or ""
-        docker_image_asset = ecr_assets.DockerImageAsset(
-            scope,
-            "ComfyUIImage",
-            directory="comfyui_aws_stack/docker",
-            platform=ecr_assets.Platform.LINUX_AMD64,
-            network_mode=ecr_assets.NetworkMode.custom(
-                "sagemaker") if is_sagemaker_studio else None,
-            build_args={
-                "SLACK_WEBHOOK_URL": slack_webhook_url
-            }
-        )
-        docker_image_asset.repository.grant_pull(task_exec_role)
+        
+        # Grant the task execution role permission to pull from the ECR repository
+        repository.grant_pull(task_exec_role)
 
         # CloudWatch Logs Group
         log_group = logs.LogGroup(
@@ -91,19 +77,12 @@ class EcsConstruct(Construct):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
-        # EFS Volume Configuration
-        efs_volume_config = ecs.EfsVolumeConfiguration(
-            file_system_id=file_system.file_system_id,
-            transit_encryption="ENABLED",
-            authorization_config=ecs.AuthorizationConfig(
-                access_point_id=access_point.access_point_id,
-                iam="ENABLED"
-            )
-        )
-
+        # Define a volume that maps to a path on the host EC2 instance
         volume = ecs.Volume(
-            name="ComfyUIVolume-" + suffix,
-            efs_volume_configuration=efs_volume_config
+            name="ComfyUIInstanceStoreVolume",
+            host=ecs.Host(
+                source_path="/data"
+            )
         )
 
         task_definition = ecs.Ec2TaskDefinition(
@@ -114,13 +93,19 @@ class EcsConstruct(Construct):
             execution_role=task_exec_role,
             volumes=[volume]
         )
-        
-        file_system.grant_read_write(task_definition.task_role)
+
+        # Define the container image from the existing ECR repository
+        container_image = ecs.ContainerImage.from_ecr_repository(
+            repository,
+            tag=comfyui_image_tag
+        )
+
+        slack_webhook_url = self.node.try_get_context("slack_webhook_url") or ""
 
         # Add container to the task definition
         container = task_definition.add_container(
             "ComfyUIContainer",
-            image=ecs.ContainerImage.from_docker_image_asset(docker_image_asset),
+            image=container_image,
             gpu_count=1,
             memory_reservation_mib=15000,
             logging=ecs.LogDriver.aws_logs(
@@ -141,7 +126,8 @@ class EcsConstruct(Construct):
             }
         )
 
-        # Mount the EFS volume to the container
+        # Mount the host volume to the container
+        # This allows models and outputs to be stored on the EC2 instance's instance store
         container.add_mount_points(
             ecs.MountPoint(
                 container_path="/home/user/opt/ComfyUI/models",
@@ -181,9 +167,6 @@ class EcsConstruct(Construct):
             ec2.Port.tcp(8181),
             "Allow inbound traffic on port 8181 from ALB",
         )
-        
-        # Allow outbound traffic to EFS
-        file_system.connections.allow_default_port_from(service_security_group)
 
         # Create ECS Service
         service = ecs.Ec2Service(

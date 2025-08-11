@@ -2,11 +2,10 @@ from aws_cdk import (
     Stack,
     CfnOutput
 )
-from aws_cdk import aws_cognito as cognito
+from aws_cdk import aws_cognito as cognito, aws_ecr as ecr
 from constructs import Construct
 
 from comfyui_aws_stack.construct.vpc_construct import VpcConstruct
-from comfyui_aws_stack.construct.efs_construct import EfsConstruct
 from comfyui_aws_stack.construct.alb_construct import AlbConstruct
 from comfyui_aws_stack.construct.asg_construct import AsgConstruct
 from comfyui_aws_stack.construct.ecs_construct import EcsConstruct
@@ -76,17 +75,31 @@ class ComfyUIStack(Stack):
         # Check host
         is_sagemaker_studio = "SAGEMAKER_APP_TYPE_LOWERCASE" in os.environ
 
+        # ECR
+        # The CDK automatically creates a repository with a name like 'cdk-hnb659fds-container-assets-...'
+        # We look up this existing repository to use it.
+        # IMPORTANT: The repository name is derived from the CDK bootstrap stack.
+        # You can find the exact name in the ECR console after the first deployment.
+        bootstrap_qualifier = self.node.try_get_context('aws-cdk:bootstrap-qualifier')
+        if not bootstrap_qualifier:
+            # Fallback for older CDK versions or if qualifier is not set
+            # You might need to find this from the AWS console (ECR -> Repositories)
+            # and hardcode it or pass it as context.
+            # For this project, the pattern is known.
+            bootstrap_qualifier = 'hnb659fds' # Default qualifier for this project
+
+        repository_name = f"cdk-{bootstrap_qualifier}-container-assets-{self.account}-{self.region}"
+        repository = ecr.Repository.from_repository_name(self, "ComfyUIRepository", repository_name)
+
+        # Image Tag
+        image_tag = comfyui_image_tag if comfyui_image_tag else 'latest'
+
+
         # VPC
 
         vpc_construct = VpcConstruct(
             self, "VpcConstruct",
             cheap_vpc=cheap_vpc
-        )
-
-        # EFS
-        efs_construct = EfsConstruct(
-            self, "EfsConstruct",
-            vpc=vpc_construct.vpc
         )
 
         # ALB
@@ -144,14 +157,8 @@ class ComfyUIStack(Stack):
             region=region,
             user_pool=user_pool,
             user_pool_client=user_pool_client,
-            comfyui_image_tag=comfyui_image_tag,
-            file_system=efs_construct.file_system,
-            access_point=efs_construct.access_point,
-        )
-
-        # Allow ECS to connect to EFS
-        efs_construct.file_system.connections.allow_default_port_from(
-            ecs_construct.service_security_group
+            repository=repository,
+            comfyui_image_tag=image_tag,
         )
 
         # Admin Lambda
@@ -193,3 +200,4 @@ class ComfyUIStack(Stack):
                   value=user_pool.user_pool_id)
         CfnOutput(self, "CognitoDomainName",
                   value=user_pool_domain_name)
+        CfnOutput(self, "EcrRepositoryName", value=repository.repository_name)

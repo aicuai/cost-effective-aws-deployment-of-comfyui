@@ -4,10 +4,12 @@ from aws_cdk import (
     aws_iam as iam,
     aws_autoscaling as autoscaling,
     RemovalPolicy,
+    Duration,
 )
 from constructs import Construct
 from cdk_nag import NagSuppressions
 from typing import Optional
+
 
 class AsgConstruct(Construct):
     auto_scaling_group: autoscaling.AutoScalingGroup
@@ -51,6 +53,35 @@ class AsgConstruct(Construct):
             ],
         )
 
+        # UserData to mount instance store
+        user_data = ec2.UserData.for_linux()
+        user_data.add_commands(
+            'set -e',
+            # Find and mount the instance store volume
+            # This script assumes the instance store is the second NVMe device
+            'INSTANCE_STORE_DEVICE=$(find /dev -name "nvme?n?" | sort | sed -n "2p")',
+            'if [ -n "$INSTANCE_STORE_DEVICE" ]; then',
+            '  echo "Found instance store at ${INSTANCE_STORE_DEVICE}"',
+            '  # Check if already formatted',
+            '  if ! blkid -s TYPE -o value "${INSTANCE_STORE_DEVICE}"; then',
+            '    echo "Formatting ${INSTANCE_STORE_DEVICE}"',
+            '    mkfs.ext4 "${INSTANCE_STORE_DEVICE}"',
+            '  fi',
+            '  mkdir -p /data',
+            '  mount "${INSTANCE_STORE_DEVICE}" /data',
+            '  chmod -R 777 /data',
+            '  # Add to fstab to remount on reboot (though data is lost)',
+            '  if ! grep -q "${INSTANCE_STORE_DEVICE}" /etc/fstab; then',
+            '    echo "${INSTANCE_STORE_DEVICE} /data ext4 defaults,nofail 0 2" >> /etc/fstab',
+            '  fi',
+            'else',
+            '  echo "No instance store device found. Models and outputs will use the root EBS volume."',
+            '  # Still create /data for consistent pathing',
+            '  mkdir -p /data',
+            '  chmod -R 777 /data',
+            'fi'
+        )
+
         # Create a Launch Template
         launchTemplate = ec2.LaunchTemplate(
             scope,
@@ -68,8 +99,9 @@ class AsgConstruct(Construct):
                                                      encrypted=True)
                 )
             ],
+            user_data=user_data,
         )
-        
+
         # Create an Auto Scaling Group
         auto_scaling_group = autoscaling.AutoScalingGroup(
             scope,
@@ -80,6 +112,7 @@ class AsgConstruct(Construct):
             max_capacity=1,
             desired_capacity=1,
             new_instances_protected_from_scale_in=False,
+            max_instance_lifetime=Duration.days(7),
         )
 
         auto_scaling_group.apply_removal_policy(RemovalPolicy.DESTROY)
