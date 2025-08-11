@@ -1,0 +1,15 @@
+# Dockerfile for local testing on non-NVIDIA machines (e.g., Mac)
+FROM python:3.10-slim
+
+# 1. Install essential dependencies
+RUN apt-get update && apt-get install -y git wget curl unzip && rm -rf /var/lib/apt/lists/*
+
+# 2. Create the same user and directory structure as the GPU image
+RUN useradd -m -u 1000 user
+RUN mkdir -p /home/user/opt/ComfyUI && chown -R user:user /home/user/opt
+USER user
+WORKDIR /home/user/opt/ComfyUI
+
+# 3. Copy the test script and make it executable
+COPY --chown=user:user test_slack.sh /home/user/opt/ComfyUI/test_slack.sh
+RUN chmod +x /home/user/opt/ComfyUI/test_slack.sh
